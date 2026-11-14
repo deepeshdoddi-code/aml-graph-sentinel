@@ -17,6 +17,8 @@ export default function App() {
   const [currency, setCurrency] = useState('INR');
   const [socStatuses, setSocStatuses] = useState({});
   const [frozenAccounts, setFrozenAccounts] = useState({});
+  const [privacyMode, setPrivacyMode] = useState(false);
+  const [feedbackMap, setFeedbackMap] = useState({});
 
   const loadData = async () => {
     setLoading(true);
@@ -81,22 +83,30 @@ export default function App() {
     setFrozenAccounts((prev) => ({ ...prev, [accId]: !prev[accId] }));
   };
 
+  const handleRecordFeedback = (clusterId, verdict) => {
+    setFeedbackMap((prev) => ({ ...prev, [clusterId]: verdict }));
+  };
+
   useEffect(() => {
     loadData();
   }, []);
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#070B14" />
+      <StatusBar barStyle="light-content" backgroundColor="#05070B" />
       {selectedAlert ? (
         <TrailDetailScreen
           alert={selectedAlert}
           currency={currency}
           onChangeCurrency={setCurrency}
+          privacyMode={privacyMode}
+          onTogglePrivacy={() => setPrivacyMode(!privacyMode)}
           socStatus={socStatuses[selectedAlert.cluster_id] || 'L1 TRIAGE'}
           onCycleSocStatus={() => handleCycleSocStatus(selectedAlert.cluster_id)}
           frozenAccounts={frozenAccounts}
           onToggleFreezeAccount={handleToggleFreezeAccount}
+          analystVerdict={feedbackMap[selectedAlert.cluster_id]}
+          onRecordFeedback={(verdict) => handleRecordFeedback(selectedAlert.cluster_id, verdict)}
           onBack={() => setSelectedAlert(null)}
         />
       ) : (
@@ -105,9 +115,13 @@ export default function App() {
           loading={loading}
           currency={currency}
           onChangeCurrency={setCurrency}
+          privacyMode={privacyMode}
+          onTogglePrivacy={() => setPrivacyMode(!privacyMode)}
           socStatuses={socStatuses}
           onCycleSocStatus={handleCycleSocStatus}
           frozenAccounts={frozenAccounts}
+          feedbackMap={feedbackMap}
+          onRecordFeedback={handleRecordFeedback}
           onSelectAlert={(alert) => setSelectedAlert(alert)}
           onRunScan={handleRunScan}
           onInjectRing={handleInjectRing}
@@ -121,6 +135,6 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#070B14',
+    backgroundColor: '#05070B',
   },
 });

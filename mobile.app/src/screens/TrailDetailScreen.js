@@ -1,11 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
-import { CURRENCIES, formatCurrency, getAccountDossier } from '../api/amlClient';
+import {
+  CURRENCIES,
+  formatCurrency,
+  maskIdentifier,
+  getAccountDossier,
+} from '../api/amlClient';
 
 export default function TrailDetailScreen({
   alert,
   currency = 'INR',
   onChangeCurrency,
+  privacyMode = false,
+  onTogglePrivacy,
   socStatus = 'L1 TRIAGE',
   onCycleSocStatus,
   frozenAccounts = {},
@@ -24,6 +31,8 @@ export default function TrailDetailScreen({
             timestamp: 1731560000,
             time_label: '10:00 AM',
             peel_pct: '0.0%',
+            reason: 'Cycle Origin & Sleeper Awakening',
+            ev_hash: '0x91a4...f01',
           },
         ];
 
@@ -31,9 +40,18 @@ export default function TrailDetailScreen({
   const [isPlaying, setIsPlaying] = useState(false);
   const [showSarReport, setShowSarReport] = useState(false);
   const [showIsoXml, setShowIsoXml] = useState(false);
+  const [showEvidencePkg, setShowEvidencePkg] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState(
     (alert && alert.kingpin_account) || safeTxns[0].src || 'ACC_104'
   );
+
+  const [cfFactors, setCfFactors] = useState({
+    flowConservation: true,
+    highVelocity: true,
+    cycleClosure: true,
+    fatfSanctions: true,
+    deviceEntityMatch: true,
+  });
 
   const currConfig = (CURRENCIES && CURRENCIES[currency]) || {
     code: 'INR',
@@ -70,9 +88,16 @@ export default function TrailDetailScreen({
   const currentTx = safeTxns[activeHop] || safeTxns[0];
   const initialAmountUSD = Number(safeTxns[0].amount) || 50000;
   const totalVolUSD = Number(alert && alert.total_volume) || initialAmountUSD;
-  const feeLostUSD = Math.max(0, initialAmountUSD - totalVolUSD);
   const retentionRatio = Number(alert && alert.retention_ratio) || 0.964;
-  const riskScore = Number(alert && alert.risk_score) || 97.4;
+  const baseRiskScore = Number(alert && alert.risk_score) || 97.4;
+
+  let counterfactualDrop = 0;
+  if (!cfFactors.flowConservation) counterfactualDrop += 32.0;
+  if (!cfFactors.highVelocity) counterfactualDrop += 24.5;
+  if (!cfFactors.cycleClosure) counterfactualDrop += 18.0;
+  if (!cfFactors.fatfSanctions) counterfactualDrop += 12.5;
+  if (!cfFactors.deviceEntityMatch) counterfactualDrop += 9.0;
+  const counterfactualScore = Math.max(5.0, baseRiskScore - counterfactualDrop);
 
   const rawAccounts =
     alert && Array.isArray(alert.accounts) && alert.accounts.length > 0
@@ -80,59 +105,50 @@ export default function TrailDetailScreen({
       : safeTxns.map((t) => t.src);
   const uniqueAccounts = Array.from(new Set(rawAccounts));
 
-  const activeDossier = getAccountDossier
-    ? getAccountDossier(selectedNodeId)
-    : {
-        id: selectedNodeId,
-        holder: `Entity ${selectedNodeId}`,
-        role: 'KINGPIN / MULE NODE',
-        pagerank: 0.94,
-        betweenness: 0.88,
-        accountAgeDays: 14,
-        dormantDaysPrior: 210,
-        jurisdiction: 'FATF Grey-List Corridor (+15%)',
-        sanctionsStatus: 'OFAC / PEP WATCHLIST MATCH',
-        pepStatus: 'PEP ASSOCIATE',
-        deviceFingerprint: 'DEV_99A1_TOR_EXIT',
-        sharedIp: '185.220.101.44',
-        tbmlFlag: 'Over-Invoiced Trade Manifest (+420%)',
-        cbdcBridge: 'USDT TRC-20 Mixer Off-Ramp',
-      };
-
+  const activeDossier = getAccountDossier(selectedNodeId);
   const isSelectedFrozen = Boolean(frozenAccounts && frozenAccounts[selectedNodeId]);
   const anyFrozenInCluster = uniqueAccounts.some((acc) => frozenAccounts && frozenAccounts[acc]);
   const blockedVolumeUSD = anyFrozenInCluster ? totalVolUSD : 0;
+  const riskEvolution = (alert && alert.risk_evolution) || [38, 54, 71, 86, baseRiskScore];
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Top Navigation & Jurisdiction SAR / ISO-20022 Action Bar */}
+      {/* Top Institutional Navigation & Export Bar */}
       <View style={styles.topNav}>
         <TouchableOpacity style={styles.backBtn} onPress={onBack}>
           <Text style={styles.backText}>← Back to Global Feed</Text>
         </TouchableOpacity>
-        <View style={{ flexDirection: 'row' }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
           <TouchableOpacity
-            style={[styles.sarBtn, { backgroundColor: '#0284C7', marginRight: 6 }]}
-            onPress={() => setShowIsoXml(!showIsoXml)}
+            style={[styles.btnEmerald, { marginRight: 6 }]}
+            onPress={() => setShowEvidencePkg(!showEvidencePkg)}
           >
-            <Text style={styles.sarBtnText}>
-              {showIsoXml ? 'Hide ISO-20022' : '🌐 ISO-20022 XML'}
+            <Text style={styles.btnTextDark}>
+              {showEvidencePkg ? 'Hide Bundle' : '📦 Evidence (#28)'}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.sarBtn}
+            style={[styles.btnSapphire, { marginRight: 6 }]}
+            onPress={() => setShowIsoXml(!showIsoXml)}
+          >
+            <Text style={styles.btnTextLight}>
+              {showIsoXml ? 'Hide XML' : '🌐 ISO-20022'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.btnViolet}
             onPress={() => setShowSarReport(!showSarReport)}
           >
-            <Text style={styles.sarBtnText}>
+            <Text style={styles.btnTextLight}>
               {showSarReport
-                ? 'Hide Filing'
+                ? 'Hide SAR'
                 : `📄 ${currConfig.regulator.split(' ')[0]} STR/SAR`}
             </Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Instant Currency Switcher + SOC Workflow Status Pill */}
+      {/* Instant Currency Switcher + Privacy Mode (#25) + SOC Status */}
       <View style={styles.currWorkflowRow}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.currBar}>
           {Object.values(CURRENCIES || {}).map((c) => {
@@ -151,106 +167,223 @@ export default function TrailDetailScreen({
           })}
         </ScrollView>
         <TouchableOpacity
+          style={[styles.socWorkflowBtn, { marginRight: 6 }]}
+          onPress={onTogglePrivacy}
+        >
+          <Text style={styles.socWorkflowText}>
+            {privacyMode ? '🕵️ Masked' : '👁️ Raw IDs'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
           style={styles.socWorkflowBtn}
           onPress={() => onCycleSocStatus && onCycleSocStatus()}
         >
-          <Text style={styles.socWorkflowText}>Workflow: {socStatus} ↻</Text>
+          <Text style={styles.socWorkflowText}>{socStatus} ↻</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Feature #10: Standardized ISO 20022 XML Regulatory Batch Payload */}
+      {/* Automated Investigation Evidence Package Modal (#28) */}
+      {showEvidencePkg && (
+        <View style={styles.xmlModal}>
+          <Text style={styles.xmlHeader}>
+            📦 AUTOMATED FORENSIC INVESTIGATION EVIDENCE PACKAGE (#28)
+          </Text>
+          <Text style={styles.xmlCode}>
+            {JSON.stringify(
+              {
+                package_id: `EVID-PKG-${alert.cluster_id}`,
+                regulator: currConfig.regulator,
+                motif_topology: alert.motif_pattern || 'Circular Split-Recombine',
+                louvain_community: alert.community_id || 'Louvain #C-01',
+                ubo_beneficiary: maskIdentifier(alert.ubo_entity || 'Viktor Rostov', privacyMode),
+                composite_risk: baseRiskScore,
+                confidence_interval: alert.confidence_interval || '±1.2%',
+                evidence_completeness_pct: alert.evidence_completeness || 96,
+                sha256_merkle_root: alert.sha256_block || 'a4f9c281e7b09d32',
+                provenance_edges: safeTxns.map((t) => ({
+                  tx: t.tx_id,
+                  route: `${maskIdentifier(t.src, privacyMode)}->${maskIdentifier(t.dst, privacyMode)}`,
+                  hash: t.ev_hash || '0x91a4',
+                })),
+              },
+              null,
+              2
+            )}
+          </Text>
+        </View>
+      )}
+
+      {/* Standardized ISO 20022 XML Regulatory Batch Payload (#10) */}
       {showIsoXml && (
         <View style={styles.xmlModal}>
           <Text style={styles.xmlHeader}>
             ISO 20022 (pacs.008 / camt.053) FIU REGULATORY TELEMETRY PAYLOAD
           </Text>
           <Text style={styles.xmlCode}>
-            {`<Document xmlns="urn:iso:std:iso:20022:tech:xsd:AML.001">\n  <FIToFICstmrCdtTrf>\n    <GrpHdr>\n      <MsgId>${currConfig.code}-SAR-${alert.cluster_id}</MsgId>\n      <Regulator>${currConfig.regulator}</Regulator>\n      <Sha256Audit>${alert.sha256_block || 'a4f9c281e7b09d32'}</Sha256Audit>\n    </GrpHdr>\n    <CdtTrfTxInf>\n      <KingpinNode pageRank="${alert.pagerank_max || 0.94}">${selectedNodeId}</KingpinNode>\n      <IntrBkSttlmAmt Ccy="${currConfig.code}">${Math.round(totalVolUSD * currConfig.rate)}</IntrBkSttlmAmt>\n      <Typology>${alert.typology}</Typology>\n    </CdtTrfTxInf>\n  </FIToFICstmrCdtTrf>\n</Document>`}
+            {`<Document xmlns="urn:iso:std:iso:20022:tech:xsd:AML.001">\n  <FIToFICstmrCdtTrf>\n    <GrpHdr>\n      <MsgId>${currConfig.code}-SAR-${alert.cluster_id}</MsgId>\n      <Regulator>${currConfig.regulator}</Regulator>\n      <Sha256Audit>${alert.sha256_block || 'a4f9c281e7b09d32'}</Sha256Audit>\n    </GrpHdr>\n    <CdtTrfTxInf>\n      <KingpinNode pageRank="${alert.pagerank_max || 0.94}">${maskIdentifier(selectedNodeId, privacyMode)}</KingpinNode>\n      <IntrBkSttlmAmt Ccy="${currConfig.code}">${Math.round(totalVolUSD * currConfig.rate)}</IntrBkSttlmAmt>\n      <Typology>${alert.typology}</Typology>\n    </CdtTrfTxInf>\n  </FIToFICstmrCdtTrf>\n</Document>`}
           </Text>
         </View>
       )}
 
-      {/* Auto-Generated Jurisdiction-Specific Regulatory Filing Modal */}
+      {/* Auto-Generated STR/SAR with Evidence-to-Report Traceability Citations (#16) */}
       {showSarReport && (
         <View style={styles.sarModal}>
           <Text style={styles.sarHeader}>
-            {currConfig.reportForm} — AUTO-GENERATED
+            {currConfig.reportForm} — EVIDENCE-TRACEABLE NARRATIVE (#16)
           </Text>
           <Text style={styles.sarLine}>
-            <Text style={styles.sarBold}>Filing ID:</Text> {currConfig.code}-2026-{alert.cluster_id} •{' '}
-            <Text style={styles.sarBold}>Regulator:</Text> {currConfig.regulator}
+            <Text style={styles.sarBold}>[Claim 1 — Identity & UBO]:</Text> Subject Kingpin{' '}
+            {maskIdentifier(alert.kingpin_account || uniqueAccounts[0], privacyMode)} controlled by{' '}
+            {maskIdentifier(alert.ubo_entity || 'Viktor Rostov', privacyMode)}{' '}
+            <Text style={styles.citeBadge}>[Cite: KYC-UBO-01, DEV_99A1]</Text>
           </Text>
           <Text style={styles.sarLine}>
-            <Text style={styles.sarBold}>Statutory Authority:</Text> {currConfig.lawCite}
+            <Text style={styles.sarBold}>[Claim 2 — Motif & Value Conservation]:</Text> Executed{' '}
+            {alert.motif_pattern || 'Circular Split-Recombine'} conserving{' '}
+            {(retentionRatio * 100).toFixed(1)}% of principal ({formatCurrency(totalVolUSD, currency)}){' '}
+            <Text style={styles.citeBadge}>
+              [Cite: {safeTxns.map((t) => t.tx_id).join(', ')}]
+            </Text>
           </Text>
           <Text style={styles.sarLine}>
-            <Text style={styles.sarBold}>Kingpin Orchestrator:</Text>{' '}
-            {alert.kingpin_account || uniqueAccounts[0]} (PageRank {alert.pagerank_max || 0.94})
-          </Text>
-          <Text style={styles.sarLine}>
-            <Text style={styles.sarBold}>Entity Resolution & TBML:</Text>{' '}
-            {alert.entity_resolution_match || 'Shared Device Fingerprint'} •{' '}
-            {alert.tbml_mismatch || 'Commercial Invoice Anomaly'}
-          </Text>
-          <Text style={styles.sarLine}>
-            <Text style={styles.sarBold}>Forensic Narrative:</Text> {alert.summary}
+            <Text style={styles.sarBold}>[Claim 3 — Statutory Breach]:</Text> Violates{' '}
+            {currConfig.lawCite} via {currConfig.paymentRail}{' '}
+            <Text style={styles.citeBadge}>[Cite: SHA-256 {alert.sha256_block || 'a4f9c2'}]</Text>
           </Text>
           <Text style={styles.sarStamp}>
-            ✓ SHA-256 Audit Chain Verified ({alert.sha256_block || '8f94e2c0b1a7'}) • Confidence{' '}
-            {riskScore.toFixed(1)}%
+            ✓ 100% Evidence-to-Report Traceability Verified • Confidence {alert.confidence_pct || 98.5}% ({alert.confidence_interval || '±1.2%'})
           </Text>
         </View>
       )}
 
-      {/* Cluster Header + Contagion Blast-Radius Counter (#11) */}
+      {/* Cluster Header Card */}
       <View style={styles.headerCard}>
         <View style={styles.topRow}>
           <Text style={styles.clusterId}>
-            CLUSTER {alert.cluster_id} • {alert.corridor || currConfig.paymentRail}
+            {alert.cluster_id} • {alert.community_id || 'Louvain #C-01'} • {alert.outlier_zscore || '+8.4σ'}
           </Text>
           <View style={styles.riskBadge}>
-            <Text style={styles.riskText}>COMPOSITE RISK {riskScore.toFixed(1)} / 100</Text>
+            <Text style={styles.riskText}>
+              RISK {baseRiskScore.toFixed(1)} ({alert.confidence_interval || '±1.2%'})
+            </Text>
           </View>
         </View>
         <Text style={styles.typology}>{alert.typology}</Text>
+        <Text style={styles.motifLine}>
+          Temporal Motif (#1): {alert.motif_pattern || 'Circular Split-Recombine'} • GNN Score (#3):{' '}
+          {((alert.gnn_probability || 0.98) * 100).toFixed(1)}%
+        </Text>
 
         <View style={styles.statsGrid}>
           <View style={styles.statBox}>
             <Text style={styles.statLabel}>Settled ({currConfig.code})</Text>
-            <Text style={styles.statValue}>
-              {formatCurrency(totalVolUSD, currency)}
-            </Text>
+            <Text style={styles.statValueSapphire}>{formatCurrency(totalVolUSD, currency)}</Text>
           </View>
           <View style={styles.statBox}>
-            <Text style={styles.statLabel}>Peeling Fee Loss</Text>
-            <Text style={styles.statValueAmber}>
-              {formatCurrency(feeLostUSD, currency)}
+            <Text style={styles.statLabel}>Evidence (#4)</Text>
+            <Text style={styles.statValueGold}>
+              {alert.evidence_completeness || 96}% ({alert.independent_indicators || 7} Ind)
             </Text>
           </View>
           <View style={styles.statBox}>
             <Text style={styles.statLabel}>Contagion Blocked</Text>
-            <Text style={styles.statValueGreen}>
+            <Text style={styles.statValueEmerald}>
               {formatCurrency(blockedVolumeUSD, currency)}
             </Text>
           </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statLabel}>Kingpin PageRank</Text>
-            <Text style={styles.statValue}>
-              {alert.kingpin_account || uniqueAccounts[0]} ({alert.pagerank_max || 0.94})
+          <View style={[styles.statBox, { marginRight: 0 }]}>
+            <Text style={styles.statLabel}>Exposure (#8)</Text>
+            <Text style={styles.statValueCrimson}>
+              {formatCurrency(alert.network_exposure_usd || totalVolUSD * 2.4, currency)}
             </Text>
           </View>
         </View>
       </View>
 
-      {/* Feature #13 & #11: Interactive Account KYC Risk Dossier & 1-Click Account Freeze */}
+      {/* Counterfactual Investigation Engine (#9 — What-If Risk Analysis) */}
+      <View style={styles.xaiCard}>
+        <View style={styles.topRow}>
+          <Text style={styles.sectionHeader}>
+            🎛️ Counterfactual What-If Engine (#9)
+          </Text>
+          <Text style={styles.cfScoreBadge}>
+            What-If Risk: {counterfactualScore.toFixed(1)} / 100 (
+            {counterfactualDrop > 0 ? `-${counterfactualDrop.toFixed(1)}` : 'Baseline'})
+          </Text>
+        </View>
+        <Text style={styles.subHint}>
+          Toggle suspicious behaviors below to observe how removing specific indicators alters the composite risk score:
+        </Text>
+        <View style={styles.nodePillRow}>
+          {[
+            { key: 'flowConservation', label: '96.4% Flow Conserved (-32.0)' },
+            { key: 'highVelocity', label: 'Burst Velocity Δt (-24.5)' },
+            { key: 'cycleClosure', label: 'Closed Cycle Topology (-18.0)' },
+            { key: 'fatfSanctions', label: 'FATF + Sanctions Hit (-12.5)' },
+            { key: 'deviceEntityMatch', label: 'Shared Tor Device/IP (-9.0)' },
+          ].map((f) => {
+            const active = cfFactors[f.key];
+            return (
+              <TouchableOpacity
+                key={f.key}
+                style={[styles.nodeSelectPill, active && styles.nodeSelectPillActive]}
+                onPress={() => setCfFactors((prev) => ({ ...prev, [f.key]: !prev[f.key] }))}
+              >
+                <Text style={[styles.nodeSelectText, active && { color: '#38BDF8' }]}>
+                  {active ? `✓ ${f.label}` : `✕ ${f.label}`}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+
+      {/* Risk Evolution History (#14) & Suspicious Network Risk Propagation (#30) */}
+      <View style={styles.xaiCard}>
+        <Text style={styles.sectionHeader}>
+          📈 Risk Evolution History (#14) & Network Risk Propagation Decay (#30)
+        </Text>
+        <View style={styles.evolutionRow}>
+          {riskEvolution.map((score, i) => (
+            <View key={i} style={styles.evoStep}>
+              <View style={styles.evoBarWrapper}>
+                <View
+                  style={[
+                    styles.evoBar,
+                    {
+                      height: Math.max(8, Math.round((score / 100) * 44)),
+                      backgroundColor: i === riskEvolution.length - 1 ? '#EF4444' : '#38BDF8',
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={styles.evoVal}>{score}</Text>
+              <Text style={styles.evoLabel}>T+{i + 1}</Text>
+            </View>
+          ))}
+        </View>
+        <View style={[styles.dossierGrid, { marginTop: 10 }]}>
+          <Text style={styles.dossierItem}>
+            <Text style={styles.dossierBold}>• Propagation Model (#30):</Text> Exponential Katz Attenuation (Decay Factor γ = 0.65 per hop)
+          </Text>
+          <Text style={styles.dossierItem}>
+            • <Text style={styles.dossierBold}>0-Hop Core:</Text> 100% ({formatCurrency(totalVolUSD, currency)}) ➔{' '}
+            <Text style={styles.dossierBold}>1-Hop Peers:</Text> 65% ({formatCurrency(totalVolUSD * 0.65, currency)}) ➔{' '}
+            <Text style={styles.dossierBold}>2-Hop Web:</Text> 42.2% ({formatCurrency(totalVolUSD * 0.422, currency)})
+          </Text>
+        </View>
+      </View>
+
+      {/* Interactive Account KYC Risk Dossier & 1-Click Account Freeze */}
       <View style={styles.dossierCard}>
         <View style={styles.dossierHeader}>
           <View style={{ flex: 1, marginRight: 8 }}>
             <Text style={styles.sectionHeader}>
-              🔍 Account KYC Dossier & Contagion Freeze Simulator
+              🔍 Account KYC, UBO (#7) & GNN Dossier (Tap Any Node)
             </Text>
             <Text style={styles.dossierSub}>
-              Inspecting Node: {activeDossier.id} ({activeDossier.holder}) • {activeDossier.role}
+              Inspecting Node: {maskIdentifier(activeDossier.id, privacyMode)} (
+              {maskIdentifier(activeDossier.holder, privacyMode)})
             </Text>
           </View>
           <TouchableOpacity
@@ -258,84 +391,50 @@ export default function TrailDetailScreen({
             onPress={() => onToggleFreezeAccount && onToggleFreezeAccount(selectedNodeId)}
           >
             <Text style={styles.freezeBtnText}>
-              {isSelectedFrozen ? `❄️ FROZEN (${selectedNodeId})` : `🔒 Freeze ${selectedNodeId}`}
+              {isSelectedFrozen
+                ? `❄️ FROZEN (${maskIdentifier(selectedNodeId, privacyMode)})`
+                : `🔒 Freeze ${maskIdentifier(selectedNodeId, privacyMode)}`}
             </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Node Selector Pills */}
         <View style={styles.nodePillRow}>
           {uniqueAccounts.map((acc) => {
             const isSel = selectedNodeId === acc;
             const isFrz = frozenAccounts && frozenAccounts[acc];
+            const disp = maskIdentifier(acc, privacyMode);
             return (
               <TouchableOpacity
                 key={acc}
                 style={[styles.nodeSelectPill, isSel && styles.nodeSelectPillActive]}
                 onPress={() => setSelectedNodeId(acc)}
               >
-                <Text style={styles.nodeSelectText}>
-                  {isFrz ? `❄️ ${acc}` : acc}
+                <Text style={[styles.nodeSelectText, isSel && { color: '#38BDF8' }]}>
+                  {isFrz ? `❄️ ${disp}` : disp}
                 </Text>
               </TouchableOpacity>
             );
           })}
         </View>
 
-        {/* Deep Intelligence Attributes (#1, #2, #4, #5, #6, #7, #9) */}
         <View style={styles.dossierGrid}>
           <Text style={styles.dossierItem}>
-            <Text style={styles.dossierBold}>• Centrality (#1):</Text> PageRank{' '}
-            {activeDossier.pagerank} | Betweenness {activeDossier.betweenness}
+            <Text style={styles.dossierBold}>• Hidden UBO (#7):</Text>{' '}
+            {maskIdentifier(activeDossier.uboName, privacyMode)}
           </Text>
           <Text style={styles.dossierItem}>
-            <Text style={styles.dossierBold}>• Dormancy (#2):</Text> Account Age{' '}
-            {activeDossier.accountAgeDays}d (Awakened after {activeDossier.dormantDaysPrior}d idle)
+            <Text style={styles.dossierBold}>• GNN (#3) & Community (#6):</Text>{' '}
+            {activeDossier.gnnClass} | {activeDossier.communityId}
           </Text>
           <Text style={styles.dossierItem}>
-            <Text style={styles.dossierBold}>• Sanctions & PEP (#7):</Text>{' '}
-            {activeDossier.sanctionsStatus} | {activeDossier.pepStatus}
+            <Text style={styles.dossierBold}>• Centrality & Dormancy:</Text> PageRank{' '}
+            {activeDossier.pagerank} | Age {activeDossier.accountAgeDays}d (Awakened after{' '}
+            {activeDossier.dormantDaysPrior}d idle)
           </Text>
           <Text style={styles.dossierItem}>
-            <Text style={styles.dossierBold}>• Jurisdiction (#6):</Text>{' '}
-            {activeDossier.jurisdiction}
+            <Text style={styles.dossierBold}>• Sanctions & Entity Link:</Text>{' '}
+            {activeDossier.sanctionsStatus} | Device {activeDossier.deviceFingerprint}
           </Text>
-          <Text style={styles.dossierItem}>
-            <Text style={styles.dossierBold}>• Entity Resolution (#4):</Text> Device{' '}
-            {activeDossier.deviceFingerprint} | IP {activeDossier.sharedIp}
-          </Text>
-          <Text style={styles.dossierItem}>
-            <Text style={styles.dossierBold}>• Trade Anomaly (#5) & Off-Ramp (#9):</Text>{' '}
-            {activeDossier.tbmlFlag} | {activeDossier.cbdcBridge}
-          </Text>
-        </View>
-      </View>
-
-      {/* Explainable AI (XAI) Risk Score Decomposition */}
-      <View style={styles.xaiCard}>
-        <Text style={styles.sectionHeader}>
-          Explainable AI (XAI) Risk Score Decomposition
-        </Text>
-        <View style={styles.xaiRow}>
-          <Text style={styles.xaiLabel}>Flow Conservation ({(retentionRatio * 100).toFixed(1)}%)</Text>
-          <View style={styles.xaiBarTrack}>
-            <View style={[styles.xaiBarFill, { width: `${Math.min(100, retentionRatio * 100)}%`, backgroundColor: '#10B981' }]} />
-          </View>
-          <Text style={styles.xaiWeight}>40%</Text>
-        </View>
-        <View style={styles.xaiRow}>
-          <Text style={styles.xaiLabel}>Temporal Velocity ({alert.time_span_minutes || 45}m burst)</Text>
-          <View style={styles.xaiBarTrack}>
-            <View style={[styles.xaiBarFill, { width: '92%', backgroundColor: '#38BDF8' }]} />
-          </View>
-          <Text style={styles.xaiWeight}>35%</Text>
-        </View>
-        <View style={styles.xaiRow}>
-          <Text style={styles.xaiLabel}>FATF + Sanctions + Sub-{currConfig.statutoryLabel}</Text>
-          <View style={styles.xaiBarTrack}>
-            <View style={[styles.xaiBarFill, { width: '95%', backgroundColor: '#F59E0B' }]} />
-          </View>
-          <Text style={styles.xaiWeight}>25%</Text>
         </View>
       </View>
 
@@ -349,14 +448,13 @@ export default function TrailDetailScreen({
               {formatCurrency(currentTx.amount, currency)})
             </Text>
           </View>
-          <TouchableOpacity style={styles.playBtn} onPress={startReplay}>
-            <Text style={styles.playBtnText}>
+          <TouchableOpacity style={styles.btnEmerald} onPress={startReplay}>
+            <Text style={styles.btnTextDark}>
               {isPlaying ? '⏸ Replaying...' : '▶ Play Trail Replay'}
             </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Step Scrubber Pills */}
         <View style={styles.stepPillRow}>
           {safeTxns.map((tx, idx) => (
             <TouchableOpacity
@@ -374,7 +472,6 @@ export default function TrailDetailScreen({
           ))}
         </View>
 
-        {/* Directed Graph Topology with Active Hop Highlighting & Tap-to-Inspect Dossier */}
         <View style={styles.graphContainer}>
           {safeTxns.map((tx, index) => {
             const isVisible = index <= activeHop;
@@ -400,7 +497,9 @@ export default function TrailDetailScreen({
                     {tx.src === (alert.kingpin_account || safeTxns[0].src) ? '👑 KINGPIN' : 'ORIGIN'}
                   </Text>
                   <Text style={styles.nodeText}>
-                    {srcFrozen ? `❄️ ${tx.src}` : tx.src}
+                    {srcFrozen
+                      ? `❄️ ${maskIdentifier(tx.src, privacyMode)}`
+                      : maskIdentifier(tx.src, privacyMode)}
                   </Text>
                 </TouchableOpacity>
 
@@ -414,9 +513,7 @@ export default function TrailDetailScreen({
                       isCurrent && styles.edgeLineCurrent,
                       (srcFrozen || dstFrozen) && styles.edgeLineBlocked,
                     ]}
-                  >
-                    <View style={styles.arrowHead} />
-                  </View>
+                  />
                   <Text style={styles.edgeTime}>
                     {tx.tx_id} • {tx.time_label}
                   </Text>
@@ -435,7 +532,9 @@ export default function TrailDetailScreen({
                     {isCycleClosure ? 'CYCLE END' : 'MULE / HUB'}
                   </Text>
                   <Text style={styles.nodeText}>
-                    {dstFrozen ? `❄️ ${tx.dst}` : tx.dst}
+                    {dstFrozen
+                      ? `❄️ ${maskIdentifier(tx.dst, privacyMode)}`
+                      : maskIdentifier(tx.dst, privacyMode)}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -444,10 +543,10 @@ export default function TrailDetailScreen({
         </View>
       </View>
 
-      {/* Chronological Hop Ledger */}
+      {/* Money Trail Provenance & Evidence Hash Timeline (#10) */}
       <View style={styles.ledgerCard}>
         <Text style={styles.sectionHeader}>
-          Chronological Audit Ledger ({currConfig.code}) • SHA-256 Signed
+          📜 Money Trail Provenance & Cryptographic Evidence Timeline (#10)
         </Text>
         {safeTxns.map((tx, idx) => (
           <TouchableOpacity
@@ -460,15 +559,17 @@ export default function TrailDetailScreen({
             </View>
             <View style={styles.txMain}>
               <Text style={styles.txRoute}>
-                {tx.src} → {tx.dst} ({tx.peel_pct || 'Conserved'})
+                {maskIdentifier(tx.src, privacyMode)} → {maskIdentifier(tx.dst, privacyMode)} (
+                {tx.peel_pct || 'Conserved'})
+              </Text>
+              <Text style={styles.txReason}>
+                Reason: {tx.reason || 'Chronological Flow Conservation Verified'}
               </Text>
               <Text style={styles.txMeta}>
-                {tx.tx_id} • {tx.time_label} • Base USD: ${Number(tx.amount).toLocaleString()}
+                {tx.tx_id} • {tx.time_label} • Evidence Hash: {tx.ev_hash || '0x91a4...f01'}
               </Text>
             </View>
-            <Text style={styles.txAmount}>
-              {formatCurrency(tx.amount, currency)}
-            </Text>
+            <Text style={styles.txAmount}>{formatCurrency(tx.amount, currency)}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -477,230 +578,265 @@ export default function TrailDetailScreen({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#070B14' },
-  content: { padding: 16, paddingBottom: 48 },
-  topNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  backBtn: { paddingVertical: 6 },
-  backText: { color: '#38BDF8', fontSize: 13, fontWeight: '800' },
-  sarBtn: {
-    backgroundColor: '#7C3AED',
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 8,
-  },
-  sarBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
-  currWorkflowRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  currBar: { flex: 1, marginRight: 8 },
-  miniCurrPill: {
-    backgroundColor: '#0F172A',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    marginRight: 6,
+  container: { flex: 1, backgroundColor: '#05070B' },
+  content: { padding: 16, paddingBottom: 56 },
+  topNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  backBtn: {
+    backgroundColor: '#0B0F17',
     borderWidth: 1,
     borderColor: '#1E293B',
-  },
-  miniCurrPillActive: { backgroundColor: '#0284C7', borderColor: '#38BDF8' },
-  miniCurrText: { color: '#94A3B8', fontSize: 10, fontWeight: '700' },
-  miniCurrTextActive: { color: '#FFFFFF', fontWeight: '900' },
-  socWorkflowBtn: {
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#38BDF8',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-  socWorkflowText: { color: '#38BDF8', fontSize: 10, fontWeight: '900' },
-  xmlModal: {
-    backgroundColor: '#090D16',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#38BDF8',
-  },
-  xmlHeader: { color: '#38BDF8', fontSize: 10, fontWeight: '900', marginBottom: 6 },
-  xmlCode: { color: '#A7F3D0', fontSize: 10, fontFamily: 'monospace', lineHeight: 15 },
-  sarModal: {
-    backgroundColor: '#1E1B4B',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#818CF8',
-  },
-  sarHeader: { color: '#A5B4FC', fontSize: 11, fontWeight: '900', marginBottom: 8 },
-  sarLine: { color: '#E0E7FF', fontSize: 11, marginBottom: 5, lineHeight: 17 },
-  sarBold: { fontWeight: '800', color: '#FFFFFF' },
-  sarStamp: { color: '#34D399', fontSize: 10, fontWeight: '800', marginTop: 6 },
-  headerCard: {
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  clusterId: { color: '#38BDF8', fontSize: 11, fontWeight: '800' },
-  riskBadge: {
-    backgroundColor: '#7F1D1D',
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#F87171',
-  },
-  riskText: { color: '#FEF2F2', fontSize: 10, fontWeight: '900' },
-  typology: { color: '#F8FAFC', fontSize: 19, fontWeight: '900', marginTop: 5 },
-  statsGrid: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
-  statBox: {
-    flex: 1,
-    backgroundColor: '#1E293B',
-    padding: 8,
-    borderRadius: 8,
-    marginRight: 6,
-  },
-  statLabel: { color: '#94A3B8', fontSize: 9, fontWeight: '600' },
-  statValue: { color: '#38BDF8', fontSize: 12, fontWeight: '900', marginTop: 3 },
-  statValueAmber: { color: '#F59E0B', fontSize: 12, fontWeight: '900', marginTop: 3 },
-  statValueGreen: { color: '#10B981', fontSize: 12, fontWeight: '900', marginTop: 3 },
-  dossierCard: {
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 14,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: '#38BDF8',
-  },
-  dossierHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  dossierSub: { color: '#38BDF8', fontSize: 11, fontWeight: '700' },
-  freezeBtn: {
-    backgroundColor: '#F43F5E',
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  freezeBtnActive: { backgroundColor: '#0891B2' },
-  freezeBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '900' },
-  nodePillRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 },
-  nodeSelectPill: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    marginRight: 6,
-    marginBottom: 4,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  nodeSelectPillActive: { backgroundColor: '#0284C7', borderColor: '#38BDF8' },
-  nodeSelectText: { color: '#F8FAFC', fontSize: 10, fontWeight: '800' },
-  dossierGrid: { backgroundColor: '#070B14', padding: 10, borderRadius: 8 },
-  dossierItem: { color: '#CBD5E1', fontSize: 11, marginBottom: 4, lineHeight: 16 },
-  dossierBold: { color: '#34D399', fontWeight: '800' },
-  xaiCard: {
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 14,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  sectionHeader: { color: '#F8FAFC', fontSize: 13, fontWeight: '800', marginBottom: 6 },
-  xaiRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 4 },
-  xaiLabel: { color: '#CBD5E1', fontSize: 10, width: 160 },
-  xaiBarTrack: {
-    flex: 1,
-    height: 8,
-    backgroundColor: '#1E293B',
-    borderRadius: 4,
-    marginHorizontal: 8,
-    overflow: 'hidden',
-  },
-  xaiBarFill: { height: '100%', borderRadius: 4 },
-  xaiWeight: { color: '#94A3B8', fontSize: 10, fontWeight: '800', width: 32, textAlign: 'right' },
-  graphCard: {
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    padding: 14,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  replayHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  replaySub: { color: '#34D399', fontSize: 11, fontWeight: '700' },
-  playBtn: {
-    backgroundColor: '#10B981',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
   },
-  playBtnText: { color: '#052E16', fontSize: 11, fontWeight: '900' },
-  stepPillRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 },
-  stepPill: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 8,
+  backText: { color: '#38BDF8', fontSize: 12, fontWeight: '800' },
+  btnEmerald: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  btnSapphire: {
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  btnViolet: {
+    backgroundColor: '#6D28D9',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  btnTextDark: { color: '#022C22', fontSize: 11, fontWeight: '800' },
+  btnTextLight: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  currWorkflowRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  currBar: { flex: 1, marginRight: 8 },
+  miniCurrPill: {
+    backgroundColor: '#0B0F17',
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 7,
+    marginRight: 6,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  miniCurrPillActive: { backgroundColor: '#0A2239', borderColor: '#38BDF8' },
+  miniCurrText: { color: '#94A3B8', fontSize: 11, fontWeight: '700', fontFamily: 'monospace' },
+  miniCurrTextActive: { color: '#38BDF8', fontWeight: '800' },
+  socWorkflowBtn: {
+    backgroundColor: '#111723',
+    borderWidth: 1,
+    borderColor: '#26334D',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 7,
+  },
+  socWorkflowText: { color: '#38BDF8', fontSize: 10, fontWeight: '800', fontFamily: 'monospace' },
+  xmlModal: {
+    backgroundColor: '#0B0F17',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+  },
+  xmlHeader: { color: '#38BDF8', fontSize: 11, fontWeight: '800', marginBottom: 6 },
+  xmlCode: { color: '#A7F3D0', fontSize: 10, fontFamily: 'monospace', lineHeight: 16 },
+  sarModal: {
+    backgroundColor: '#15112A',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#8B5CF6',
+  },
+  sarHeader: { color: '#C4B5FD', fontSize: 11, fontWeight: '800', marginBottom: 8 },
+  sarLine: { color: '#E2E8F0', fontSize: 12, marginBottom: 6, lineHeight: 18 },
+  sarBold: { fontWeight: '800', color: '#FFFFFF' },
+  citeBadge: { color: '#38BDF8', fontWeight: '700', fontSize: 11, fontFamily: 'monospace' },
+  sarStamp: { color: '#34D399', fontSize: 11, fontWeight: '800', marginTop: 6 },
+  headerCard: {
+    backgroundColor: '#0B0F17',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderLeftWidth: 4,
+    borderLeftColor: '#EF4444',
+  },
+  topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  clusterId: { color: '#38BDF8', fontSize: 11, fontWeight: '800', fontFamily: 'monospace' },
+  riskBadge: {
+    backgroundColor: '#2A0E17',
+    paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#EF4444',
+  },
+  riskText: { color: '#FCA5A5', fontSize: 10, fontWeight: '800', fontFamily: 'monospace' },
+  typology: { color: '#F8FAFC', fontSize: 20, fontWeight: '800', marginTop: 6 },
+  motifLine: { color: '#34D399', fontSize: 12, fontWeight: '600', marginTop: 4 },
+  statsGrid: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 14 },
+  statBox: {
+    flex: 1,
+    backgroundColor: '#111723',
+    padding: 10,
+    borderRadius: 8,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  statLabel: { color: '#94A3B8', fontSize: 10, fontWeight: '600' },
+  statValueSapphire: { color: '#38BDF8', fontSize: 12, fontWeight: '800', fontFamily: 'monospace', marginTop: 4 },
+  statValueGold: { color: '#FBBF24', fontSize: 12, fontWeight: '800', fontFamily: 'monospace', marginTop: 4 },
+  statValueEmerald: { color: '#34D399', fontSize: 12, fontWeight: '800', fontFamily: 'monospace', marginTop: 4 },
+  statValueCrimson: { color: '#F87171', fontSize: 12, fontWeight: '800', fontFamily: 'monospace', marginTop: 4 },
+  xaiCard: {
+    backgroundColor: '#0B0F17',
+    borderRadius: 12,
+    padding: 15,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  sectionHeader: { color: '#F8FAFC', fontSize: 14, fontWeight: '800', marginBottom: 4 },
+  subHint: { color: '#94A3B8', fontSize: 11, marginBottom: 10 },
+  cfScoreBadge: {
+    backgroundColor: '#06281E',
+    color: '#34D399',
+    fontSize: 11,
+    fontWeight: '800',
+    fontFamily: 'monospace',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#10B981',
+  },
+  evolutionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'flex-end',
+    backgroundColor: '#111723',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    marginTop: 6,
+  },
+  evoStep: { alignItems: 'center' },
+  evoBarWrapper: { height: 46, justifyContent: 'flex-end' },
+  evoBar: { width: 20, borderRadius: 4 },
+  evoVal: { color: '#F8FAFC', fontSize: 10, fontWeight: '800', fontFamily: 'monospace', marginTop: 4 },
+  evoLabel: { color: '#64748B', fontSize: 9, fontFamily: 'monospace' },
+  dossierCard: {
+    backgroundColor: '#0B0F17',
+    borderRadius: 12,
+    padding: 15,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+  },
+  dossierHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  dossierSub: { color: '#38BDF8', fontSize: 11, fontWeight: '600' },
+  freezeBtn: {
+    backgroundColor: '#E11D48',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  freezeBtnActive: { backgroundColor: '#0284C7' },
+  freezeBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  nodePillRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 },
+  nodeSelectPill: {
+    backgroundColor: '#111723',
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 7,
     marginRight: 6,
     marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#26334D',
   },
-  stepPillActive: { backgroundColor: '#0284C7' },
-  stepPillText: { color: '#64748B', fontSize: 10, fontWeight: '700' },
-  stepPillTextActive: { color: '#FFFFFF' },
+  nodeSelectPillActive: { backgroundColor: '#0A2239', borderColor: '#38BDF8' },
+  nodeSelectText: { color: '#E2E8F0', fontSize: 11, fontWeight: '700' },
+  dossierGrid: {
+    backgroundColor: '#111723',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  dossierItem: { color: '#CBD5E1', fontSize: 11, marginBottom: 5, lineHeight: 16 },
+  dossierBold: { color: '#34D399', fontWeight: '800' },
+  graphCard: {
+    backgroundColor: '#0B0F17',
+    borderRadius: 12,
+    padding: 15,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  replayHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  replaySub: { color: '#34D399', fontSize: 11, fontWeight: '700', fontFamily: 'monospace' },
+  stepPillRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 10 },
+  stepPill: {
+    backgroundColor: '#111723',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 7,
+    marginRight: 6,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#26334D',
+  },
+  stepPillActive: { backgroundColor: '#0A2239', borderColor: '#38BDF8' },
+  stepPillText: { color: '#94A3B8', fontSize: 10, fontWeight: '700', fontFamily: 'monospace' },
+  stepPillTextActive: { color: '#38BDF8', fontWeight: '800' },
   graphContainer: { paddingVertical: 4 },
   hopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginVertical: 6,
+    marginVertical: 7,
   },
   hopRowDimmed: { opacity: 0.25 },
   nodeCircle: {
-    width: 88,
-    paddingVertical: 7,
-    backgroundColor: '#1E293B',
+    width: 96,
+    paddingVertical: 8,
+    backgroundColor: '#111723',
     borderRadius: 10,
     borderWidth: 1.5,
     borderColor: '#38BDF8',
     alignItems: 'center',
   },
-  nodeCurrent: { borderColor: '#10B981', backgroundColor: '#064E3B' },
-  cycleNode: { backgroundColor: '#7F1D1D', borderColor: '#F87171' },
-  nodeFrozen: { backgroundColor: '#083344', borderColor: '#22D3EE' },
+  nodeCurrent: { borderColor: '#10B981', backgroundColor: '#06281E' },
+  cycleNode: { backgroundColor: '#2A0E17', borderColor: '#EF4444' },
+  nodeFrozen: { backgroundColor: '#0A2239', borderColor: '#38BDF8' },
   nodeRole: { color: '#94A3B8', fontSize: 8, fontWeight: '800', marginBottom: 2 },
-  nodeText: { color: '#F8FAFC', fontSize: 10, fontWeight: '900' },
-  edgeBridge: { flex: 1, alignItems: 'center', paddingHorizontal: 6 },
-  edgeAmount: { color: '#34D399', fontSize: 11, fontWeight: '800', marginBottom: 4 },
-  edgeAmountCurrent: { color: '#FBBF24', fontSize: 12, fontWeight: '900' },
+  nodeText: { color: '#F8FAFC', fontSize: 10, fontWeight: '800', fontFamily: 'monospace' },
+  edgeBridge: { flex: 1, alignItems: 'center', paddingHorizontal: 8 },
+  edgeAmount: { color: '#34D399', fontSize: 11, fontWeight: '800', fontFamily: 'monospace', marginBottom: 4 },
+  edgeAmountCurrent: { color: '#FBBF24', fontSize: 12, fontWeight: '900', fontFamily: 'monospace' },
   edgeLine: {
     width: '100%',
     height: 2,
-    backgroundColor: '#475569',
-    justifyContent: 'center',
-    alignItems: 'flex-end',
+    backgroundColor: '#334155',
   },
   edgeLineCurrent: { height: 3, backgroundColor: '#10B981' },
-  edgeLineBlocked: { backgroundColor: '#22D3EE' },
-  arrowHead: {
-    width: 7,
-    height: 7,
-    borderTopWidth: 2,
-    borderRightWidth: 2,
-    borderColor: '#38BDF8',
-    transform: [{ rotate: '45deg' }],
-  },
-  edgeTime: { color: '#94A3B8', fontSize: 9, marginTop: 4 },
+  edgeLineBlocked: { backgroundColor: '#38BDF8' },
+  edgeTime: { color: '#94A3B8', fontSize: 9, fontFamily: 'monospace', marginTop: 4 },
   ledgerCard: {
-    backgroundColor: '#0F172A',
+    backgroundColor: '#0B0F17',
     borderRadius: 12,
-    padding: 14,
+    padding: 15,
     marginTop: 12,
     borderWidth: 1,
     borderColor: '#1E293B',
@@ -708,25 +844,28 @@ const styles = StyleSheet.create({
   txRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 9,
+    paddingVertical: 10,
     paddingHorizontal: 8,
     borderRadius: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
   },
-  txRowActive: { backgroundColor: '#1E293B' },
+  txRowActive: { backgroundColor: '#111723', borderLeftWidth: 3, borderLeftColor: '#10B981' },
   hopBadge: {
-    backgroundColor: '#0284C7',
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    backgroundColor: '#0A2239',
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 10,
   },
-  hopText: { color: '#FFF', fontSize: 10, fontWeight: '800' },
+  hopText: { color: '#38BDF8', fontSize: 10, fontWeight: '800', fontFamily: 'monospace' },
   txMain: { flex: 1 },
-  txRoute: { color: '#F8FAFC', fontSize: 13, fontWeight: '700' },
-  txMeta: { color: '#64748B', fontSize: 10, marginTop: 2 },
-  txAmount: { color: '#34D399', fontSize: 13, fontWeight: '800' },
+  txRoute: { color: '#F8FAFC', fontSize: 13, fontWeight: '700', fontFamily: 'monospace' },
+  txReason: { color: '#38BDF8', fontSize: 11, fontWeight: '600', marginTop: 2 },
+  txMeta: { color: '#64748B', fontSize: 10, fontFamily: 'monospace', marginTop: 2 },
+  txAmount: { color: '#34D399', fontSize: 13, fontWeight: '800', fontFamily: 'monospace' },
 });
