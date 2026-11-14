@@ -1,205 +1,111 @@
 import json
+import os
 import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
-from urllib.parse import urlparse, parse_qs
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-MOCK_ALERTS_PATH = DATA_DIR / "mock_alerts.json"
-LIVE_OUTPUT_PATH = DATA_DIR / "live_output.json"
-TRANSACTIONS_CSV_PATH = DATA_DIR / "transactions.csv"
-
-CPP_CANDIDATES = [
-    BASE_DIR / "cpp_engine" / "build" / "aml_sentinel.exe",
-    BASE_DIR / "cpp_engine" / "build" / "Release" / "aml_sentinel.exe",
-    BASE_DIR / "cpp_engine" / "aml_sentinel.exe",
-]
-
-# Built-in fallback payload so the server NEVER crashes if mock_alerts.json is empty
-DEFAULT_MOCK_PAYLOAD = {
-    "engine_status": "ACTIVE",
-    "dataset_summary": {
-        "total_transactions": 5000,
-        "total_accounts": 840,
-        "time_span_hours": 168,
-        "baseline_rule": "Single Transaction > $10,000"
-    },
-    "evaluation": {
-        "baseline": {
-            "precision": 0.24,
-            "recall": 0.31,
-            "f1": 0.27,
-            "true_positives": 42,
-            "false_positives": 133,
-            "false_negatives": 93
-        },
-        "graph_engine": {
-            "precision": 0.92,
-            "recall": 0.89,
-            "f1": 0.90,
-            "true_positives": 120,
-            "false_positives": 10,
-            "false_negatives": 15
-        }
-    },
-    "alerts": [
-        {
-            "cluster_id": "CL-901",
-            "typology": "Cyclic Round-Tripping",
-            "risk_score": 97.4,
-            "total_volume": 48200.00,
-            "hop_count": 4,
-            "time_span_minutes": 195,
-            "retention_ratio": 0.964,
-            "accounts": ["ACC_104", "ACC_389", "ACC_712", "ACC_501", "ACC_104"],
-            "transactions": [
-                {"tx_id": "TX_8001", "src": "ACC_104", "dst": "ACC_389", "amount": 50000.00, "timestamp": 1731560000, "time_label": "10:00 AM"},
-                {"tx_id": "TX_8044", "src": "ACC_389", "dst": "ACC_712", "amount": 49250.00, "timestamp": 1731563600, "time_label": "11:00 AM"},
-                {"tx_id": "TX_8092", "src": "ACC_712", "dst": "ACC_501", "amount": 48700.00, "timestamp": 1731568100, "time_label": "12:15 PM"},
-                {"tx_id": "TX_8150", "src": "ACC_501", "dst": "ACC_104", "amount": 48200.00, "timestamp": 1731571700, "time_label": "01:15 PM"}
-            ],
-            "summary": "Account ACC_104 initiated $50,000.00 across a 4-hop chronological ring (ACC_104 -> ACC_389 -> ACC_712 -> ACC_501 -> ACC_104) within 3 hours 15 minutes, recovering $48,200.00 (96.4% value conservation) to disguise illicit origin as clean return capital."
-        },
-        {
-            "cluster_id": "CL-842",
-            "typology": "Fan-In / Fan-Out Dispersion",
-            "risk_score": 93.8,
-            "total_volume": 37400.00,
-            "hop_count": 5,
-            "time_span_minutes": 85,
-            "retention_ratio": 0.979,
-            "accounts": ["ACC_201", "ACC_202", "ACC_203", "ACC_204", "ACC_900", "ACC_999"],
-            "transactions": [
-                {"tx_id": "TX_7101", "src": "ACC_201", "dst": "ACC_900", "amount": 9500.00, "timestamp": 1731575000, "time_label": "02:10 PM"},
-                {"tx_id": "TX_7105", "src": "ACC_202", "dst": "ACC_900", "amount": 9400.00, "timestamp": 1731575600, "time_label": "02:20 PM"},
-                {"tx_id": "TX_7112", "src": "ACC_203", "dst": "ACC_900", "amount": 9600.00, "timestamp": 1731576200, "time_label": "02:30 PM"},
-                {"tx_id": "TX_7118", "src": "ACC_204", "dst": "ACC_900", "amount": 9700.00, "timestamp": 1731576800, "time_label": "02:40 PM"},
-                {"tx_id": "TX_7190", "src": "ACC_900", "dst": "ACC_999", "amount": 37400.00, "timestamp": 1731580100, "time_label": "03:35 PM"}
-            ],
-            "summary": "Four feeder accounts (ACC_201, ACC_202, ACC_203, ACC_204) structured sub-threshold deposits between $9,400 and $9,700 into aggregator hub ACC_900 within 30 minutes to evade the $10,000 reporting limit, before sweeping $37,400.00 (97.9% conserved) to offshore endpoint ACC_999."
-        },
-        {
-            "cluster_id": "CL-779",
-            "typology": "Rapid Pass-Through (Mule)",
-            "risk_score": 88.5,
-            "total_volume": 28950.00,
-            "hop_count": 3,
-            "time_span_minutes": 42,
-            "retention_ratio": 0.965,
-            "accounts": ["ACC_410", "ACC_615", "ACC_822", "ACC_930"],
-            "transactions": [
-                {"tx_id": "TX_6011", "src": "ACC_410", "dst": "ACC_615", "amount": 30000.00, "timestamp": 1731582000, "time_label": "04:00 PM"},
-                {"tx_id": "TX_6019", "src": "ACC_615", "dst": "ACC_822", "amount": 29400.00, "timestamp": 1731583200, "time_label": "04:20 PM"},
-                {"tx_id": "TX_6028", "src": "ACC_822", "dst": "ACC_930", "amount": 28950.00, "timestamp": 1731584520, "time_label": "04:42 PM"}
-            ],
-            "summary": "High-velocity mule chain detected across ACC_410 -> ACC_615 -> ACC_822 -> ACC_930. Intermediate mule accounts ACC_615 and ACC_822 forwarded 96.5% of inbound funds ($28,950.00 of $30,000.00) in under 42 minutes with near-zero balance retention."
-        },
-        {
-            "cluster_id": "CL-614",
-            "typology": "Fan-In / Fan-Out Dispersion",
-            "risk_score": 82.1,
-            "total_volume": 38400.00,
-            "hop_count": 4,
-            "time_span_minutes": 50,
-            "retention_ratio": 0.960,
-            "accounts": ["ACC_055", "ACC_301", "ACC_302", "ACC_303", "ACC_304"],
-            "transactions": [
-                {"tx_id": "TX_5001", "src": "ACC_055", "dst": "ACC_301", "amount": 9600.00, "timestamp": 1731585000, "time_label": "04:50 PM"},
-                {"tx_id": "TX_5002", "src": "ACC_055", "dst": "ACC_302", "amount": 9600.00, "timestamp": 1731585600, "time_label": "05:00 PM"},
-                {"tx_id": "TX_5003", "src": "ACC_055", "dst": "ACC_303", "amount": 9600.00, "timestamp": 1731586800, "time_label": "05:20 PM"},
-                {"tx_id": "TX_5004", "src": "ACC_055", "dst": "ACC_304", "amount": 9600.00, "timestamp": 1731588000, "time_label": "05:40 PM"}
-            ],
-            "summary": "Source account ACC_055 executed rapid Fan-Out dispersion, splitting $38,400.00 into four identical $9,600.00 transfers across ACC_301, ACC_302, ACC_303, and ACC_304 within 50 minutes to stay deliberately under the $10,000 threshold."
-        }
-    ]
-}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "..", "data")
+CPP_DIR = os.path.join(BASE_DIR, "..", "cpp_engine")
+MOCK_JSON = os.path.join(DATA_DIR, "mock_alerts.json")
+LIVE_JSON = os.path.join(DATA_DIR, "live_output.json")
+CSV_PATH = os.path.join(DATA_DIR, "transactions.csv")
+EXE_WIN = os.path.join(CPP_DIR, "aml_sentinel.exe")
+EXE_LINUX = os.path.join(CPP_DIR, "aml_sentinel")
 
 
-def ensure_mock_file():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not MOCK_ALERTS_PATH.exists() or MOCK_ALERTS_PATH.stat().st_size < 10:
-        with open(MOCK_ALERTS_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_MOCK_PAYLOAD, f, indent=2)
+def ensure_csv_exists():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if not os.path.exists(CSV_PATH):
+        rows = [
+            "tx_id,src,dst,amount,timestamp,time_label,is_laundering",
+            "TX_8001,ACC_104,ACC_389,50000.0,1731560000,10:00 AM,1",
+            "TX_8044,ACC_389,ACC_712,49250.0,1731563600,11:00 AM,1",
+            "TX_8092,ACC_712,ACC_501,48700.0,1731568100,12:15 PM,1",
+            "TX_8150,ACC_501,ACC_104,48200.0,1731571700,01:15 PM,1",
+            "TX_7101,ACC_201,ACC_900,9500.0,1731575000,02:10 PM,1",
+            "TX_7105,ACC_202,ACC_900,9400.0,1731575600,02:20 PM,1",
+            "TX_7112,ACC_203,ACC_900,9600.0,1731576200,02:30 PM,1",
+            "TX_7118,ACC_204,ACC_900,9700.0,1731576800,02:40 PM,1",
+            "TX_7190,ACC_900,ACC_999,37400.0,1731580100,03:35 PM,1",
+            "TX_6011,ACC_410,ACC_615,30000.0,1731582000,04:00 PM,1",
+            "TX_6019,ACC_615,ACC_822,29400.0,1731583200,04:20 PM,1",
+            "TX_6028,ACC_822,ACC_930,28950.0,1731584520,04:42 PM,1",
+        ]
+        for i in range(1, 36):
+            amt = 14500.0 + (i * 200)
+            ts = 1731500000 + (i * 600)
+            rows.append(f"TX_NORM_{i},CORP_{i},VENDOR_{i},{amt},{ts},09:00 AM,0")
+        with open(CSV_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(rows) + "\n")
 
 
-def load_safe_json(file_path: Path):
-    try:
-        if file_path.exists() and file_path.stat().st_size > 10:
-            with open(file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Warning reading {file_path}: {e}")
-    return DEFAULT_MOCK_PAYLOAD
+def load_payload():
+    if os.path.exists(LIVE_JSON):
+        with open(LIVE_JSON, "r", encoding="utf-8") as f:
+            return json.load(f)
+    if os.path.exists(MOCK_JSON):
+        with open(MOCK_JSON, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"engine_status": "OFFLINE", "alerts": []}
 
 
-def find_cpp_binary():
-    for path in CPP_CANDIDATES:
-        if path.exists():
-            return path
-    return None
+def run_cpp_engine():
+    ensure_csv_exists()
+    if os.path.exists(EXE_WIN):
+        subprocess.run([EXE_WIN, CSV_PATH, LIVE_JSON], check=False)
+    elif os.path.exists(EXE_LINUX):
+        subprocess.run(
+            ["wsl", "./aml_sentinel", "../data/transactions.csv", "../data/live_output.json"],
+            cwd=CPP_DIR,
+            check=False,
+        )
+    return load_payload()
 
 
-class AMLRequestHandler(BaseHTTPRequestHandler):
-    def _send_json(self, status_code: int, payload: dict):
-        body = json.dumps(payload, indent=2).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+class AMLHandler(BaseHTTPRequestHandler):
+    def _send_cors_headers(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
-        self.wfile.write(body)
 
     def do_OPTIONS(self):
-        self._send_json(200, {"status": "ok"})
+        self._send_cors_headers()
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        query = parse_qs(parsed.query)
-
-        # Serve alerts on both "/" and "/api/alerts" so opening localhost:8000 works directly
-        if parsed.path in ("/", "/api/alerts"):
-            mode = query.get("mode", ["mock"])[0]
-            target = LIVE_OUTPUT_PATH if (mode == "live" and LIVE_OUTPUT_PATH.exists()) else MOCK_ALERTS_PATH
-            self._send_json(200, load_safe_json(target))
-            return
-
-        if parsed.path == "/api/health":
-            cpp_bin = find_cpp_binary()
-            self._send_json(200, {
-                "status": "online",
-                "cpp_binary_compiled": cpp_bin is not None,
-                "mock_data_ready": True,
-            })
-            return
-
-        self._send_json(200, load_safe_json(MOCK_ALERTS_PATH))
+        if self.path.startswith("/api/alerts"):
+            self._send_cors_headers()
+            self.wfile.write(json.dumps(load_payload()).encode("utf-8"))
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_POST(self):
-        cpp_bin = find_cpp_binary()
-        if cpp_bin and TRANSACTIONS_CSV_PATH.exists():
-            try:
-                subprocess.run(
-                    [str(cpp_bin), str(TRANSACTIONS_CSV_PATH), str(LIVE_OUTPUT_PATH)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if LIVE_OUTPUT_PATH.exists():
-                    self._send_json(200, load_safe_json(LIVE_OUTPUT_PATH))
-                    return
-            except Exception as e:
-                print(f"C++ scan fallback triggered: {e}")
-
-        self._send_json(200, load_safe_json(MOCK_ALERTS_PATH))
+        if self.path.startswith("/api/scan"):
+            self._send_cors_headers()
+            data = run_cpp_engine()
+            self.wfile.write(json.dumps(data).encode("utf-8"))
+        elif self.path.startswith("/api/inject"):
+            ensure_csv_exists()
+            injected_ring = [
+                "TX_9901,ACC_777,ACC_881,65000.0,1731590000,06:10 PM,1",
+                "TX_9902,ACC_881,ACC_882,64100.0,1731591200,06:30 PM,1",
+                "TX_9903,ACC_882,ACC_777,63400.0,1731592400,06:50 PM,1",
+            ]
+            with open(CSV_PATH, "a", encoding="utf-8") as f:
+                f.write("\n".join(injected_ring) + "\n")
+            self._send_cors_headers()
+            data = run_cpp_engine()
+            self.wfile.write(json.dumps(data).encode("utf-8"))
+        else:
+            self.send_response(404)
+            self.end_headers()
 
 
 if __name__ == "__main__":
-    ensure_mock_file()
-    port = 8000
-    server = HTTPServer(("127.0.0.1", port), AMLRequestHandler)
-    print(f"Server LIVE! Open http://127.0.0.1:{port} in your browser")
+    ensure_csv_exists()
+    server = HTTPServer(("0.0.0.0", 8000), AMLHandler)
+    print("[AML-Sentinel Backend] Listening on http://127.0.0.1:8000")
     server.serve_forever()

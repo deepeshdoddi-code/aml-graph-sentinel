@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <chrono>
 
 namespace aml {
 
@@ -20,9 +21,10 @@ public:
         std::getline(file, line); // Skip CSV header
         while (std::getline(file, line)) {
             if (line.empty()) continue;
+            if (line.back() == '\r') line.pop_back();
             std::stringstream ss(line);
             Transaction tx;
-            std::string amount_str, ts_str, label_str, illicit_str;
+            std::string amount_str, ts_str, illicit_str;
             std::getline(ss, tx.tx_id, ',');
             std::getline(ss, tx.src, ',');
             std::getline(ss, tx.dst, ',');
@@ -31,6 +33,7 @@ public:
             std::getline(ss, tx.time_label, ',');
             std::getline(ss, illicit_str, ',');
 
+            if (tx.tx_id.empty() || amount_str.empty() || ts_str.empty()) continue;
             tx.amount = std::stod(amount_str);
             tx.timestamp = std::stoll(ts_str);
             tx.is_laundering = (illicit_str == "1" || illicit_str == "true");
@@ -89,12 +92,12 @@ public:
         return rep;
     }
 
-    void writeJSON(const std::string& out_path) const {
+    void writeJSON(const std::string& out_path, double exec_ms) const {
         EvaluationReport eval = evaluate();
         std::ofstream out(out_path);
         out << std::fixed << std::setprecision(2);
         out << "{\n";
-        out << "  \"engine_status\": \"ACTIVE (TFCG C++20 Native Binary)\",\n";
+        out << "  \"engine_status\": \"ACTIVE (C++20 TFCG Binary • " << exec_ms << " ms)\",\n";
         out << "  \"dataset_summary\": {\n";
         out << "    \"total_transactions\": " << all_txns_.size() << ",\n";
         out << "    \"total_accounts\": " << accounts_.size() << ",\n";
@@ -104,10 +107,16 @@ public:
         out << "  \"evaluation\": {\n";
         out << "    \"baseline\": { \"precision\": " << eval.baseline.precision
             << ", \"recall\": " << eval.baseline.recall
-            << ", \"f1\": " << eval.baseline.f1 << " },\n";
+            << ", \"f1\": " << eval.baseline.f1
+            << ", \"true_positives\": " << eval.baseline.true_positives
+            << ", \"false_positives\": " << eval.baseline.false_positives
+            << ", \"false_negatives\": " << eval.baseline.false_negatives << " },\n";
         out << "    \"graph_engine\": { \"precision\": " << eval.graph_engine.precision
             << ", \"recall\": " << eval.graph_engine.recall
-            << ", \"f1\": " << eval.graph_engine.f1 << " }\n";
+            << ", \"f1\": " << eval.graph_engine.f1
+            << ", \"true_positives\": " << eval.graph_engine.true_positives
+            << ", \"false_positives\": " << eval.graph_engine.false_positives
+            << ", \"false_negatives\": " << eval.graph_engine.false_negatives << " }\n";
         out << "  },\n";
         out << "  \"alerts\": [\n";
         for (size_t i = 0; i < alerts_.size(); ++i) {
@@ -121,6 +130,11 @@ public:
             out << "      \"time_span_minutes\": " << a.time_span_minutes << ",\n";
             out << "      \"retention_ratio\": " << std::setprecision(3) << a.retention_ratio << std::setprecision(2) << ",\n";
             out << "      \"summary\": \"" << a.summary << "\",\n";
+            out << "      \"accounts\": [";
+            for (size_t k = 0; k < a.accounts.size(); ++k) {
+                out << "\"" << a.accounts[k] << "\"" << (k + 1 < a.accounts.size() ? ", " : "");
+            }
+            out << "],\n";
             out << "      \"transactions\": [\n";
             for (size_t j = 0; j < a.transactions.size(); ++j) {
                 const auto& t = a.transactions[j];
@@ -147,6 +161,13 @@ private:
         if (init_val <= 0) return false;
         double ratio = curr_val / init_val;
         return ratio >= (1.0 - tol) && ratio <= 1.02;
+    }
+
+    static double computeCompositeRisk(double retention, long long span_mins, int hops, double bonus) {
+        double flow_score = std::min(100.0, retention * 100.0) * 0.40;
+        double vel_score = std::max(50.0, 100.0 - (span_mins / 12.0)) * 0.35;
+        double struct_score = std::min(100.0, (hops * 18.0) + bonus) * 0.25;
+        return std::min(99.4, flow_score + vel_score + struct_score);
     }
 
     void detectCyclicRoundTripping() {
@@ -178,15 +199,19 @@ private:
                 Alert a;
                 a.cluster_id = "CL-90" + std::to_string(alerts_.size() + 1);
                 a.typology = "Cyclic Round-Tripping";
-                a.risk_score = 97.4;
                 a.total_volume = next_tx.amount;
                 a.hop_count = static_cast<int>(path.size());
-                a.time_span_minutes = (next_tx.timestamp - path.front().timestamp) / 60;
+                a.time_span_minutes = std::max(1LL, (next_tx.timestamp - path.front().timestamp) / 60);
                 a.retention_ratio = next_tx.amount / init_amt;
+                a.risk_score = computeCompositeRisk(a.retention_ratio, a.time_span_minutes, a.hop_count, 28.0);
                 a.transactions = path;
+                for (const auto& p : path) a.accounts.push_back(p.src);
+                a.accounts.push_back(start_node);
                 a.summary = "Account " + start_node + " initiated $" + std::to_string((int)init_amt) +
                             " across a " + std::to_string(a.hop_count) + "-hop chronological ring, recovering $" +
-                            std::to_string((int)next_tx.amount) + " to disguise illicit origin as clean return capital.";
+                            std::to_string((int)next_tx.amount) + " (" +
+                            std::to_string((int)(a.retention_ratio * 100)) + "% conserved) within " +
+                            std::to_string(a.time_span_minutes) + " mins.";
                 alerts_.push_back(a);
                 path.pop_back();
                 return;
@@ -219,12 +244,15 @@ private:
                         Alert a;
                         a.cluster_id = "CL-84" + std::to_string(alerts_.size() + 1);
                         a.typology = "Fan-In / Fan-Out Dispersion";
-                        a.risk_score = 93.8;
                         a.total_volume = out_tx.amount;
                         a.hop_count = static_cast<int>(cluster.size());
-                        a.time_span_minutes = (out_tx.timestamp - cluster.front().timestamp) / 60;
+                        a.time_span_minutes = std::max(1LL, (out_tx.timestamp - cluster.front().timestamp) / 60);
                         a.retention_ratio = out_tx.amount / sum_in;
+                        a.risk_score = computeCompositeRisk(a.retention_ratio, a.time_span_minutes, a.hop_count, 22.0);
                         a.transactions = cluster;
+                        for (size_t i = 0; i + 1 < cluster.size(); ++i) a.accounts.push_back(cluster[i].src);
+                        a.accounts.push_back(hub);
+                        a.accounts.push_back(out_tx.dst);
                         a.summary = std::to_string(cluster.size() - 1) +
                                     " feeder accounts structured sub-threshold deposits under $10,000 into aggregator hub " +
                                     hub + " before sweeping $" + std::to_string((int)out_tx.amount) + " to " + out_tx.dst + ".";
@@ -253,12 +281,13 @@ private:
                                     Alert a;
                                     a.cluster_id = "CL-77" + std::to_string(alerts_.size() + 1);
                                     a.typology = "Rapid Pass-Through (Mule)";
-                                    a.risk_score = 88.5;
                                     a.total_volume = hop3.amount;
                                     a.hop_count = 3;
-                                    a.time_span_minutes = (hop3.timestamp - in_tx.timestamp) / 60;
+                                    a.time_span_minutes = std::max(1LL, (hop3.timestamp - in_tx.timestamp) / 60);
                                     a.retention_ratio = hop3.amount / in_tx.amount;
+                                    a.risk_score = computeCompositeRisk(a.retention_ratio, a.time_span_minutes, a.hop_count, 18.0);
                                     a.transactions = {in_tx, out_tx, hop3};
+                                    a.accounts = {in_tx.src, node, out_tx.dst, hop3.dst};
                                     a.summary = "High-velocity mule chain detected across " + in_tx.src + " -> " +
                                                 node + " -> " + out_tx.dst + " -> " + hop3.dst +
                                                 " forwarding $" + std::to_string((int)hop3.amount) + " in " +
@@ -291,26 +320,22 @@ private:
     }
 
     void seedDefaultDataset() {
-        // Cyclic Round-Tripping Ring
         addTx({"TX_8001", "ACC_104", "ACC_389", 50000.0, 1731560000, "10:00 AM", true});
         addTx({"TX_8044", "ACC_389", "ACC_712", 49250.0, 1731563600, "11:00 AM", true});
         addTx({"TX_8092", "ACC_712", "ACC_501", 48700.0, 1731568100, "12:15 PM", true});
         addTx({"TX_8150", "ACC_501", "ACC_104", 48200.0, 1731571700, "01:15 PM", true});
 
-        // Fan-In / Fan-Out Smurfing Cluster
         addTx({"TX_7101", "ACC_201", "ACC_900", 9500.0, 1731575000, "02:10 PM", true});
         addTx({"TX_7105", "ACC_202", "ACC_900", 9400.0, 1731575600, "02:20 PM", true});
         addTx({"TX_7112", "ACC_203", "ACC_900", 9600.0, 1731576200, "02:30 PM", true});
         addTx({"TX_7118", "ACC_204", "ACC_900", 9700.0, 1731576800, "02:40 PM", true});
         addTx({"TX_7190", "ACC_900", "ACC_999", 37400.0, 1731580100, "03:35 PM", true});
 
-        // Rapid Pass-Through Mule Chain
         addTx({"TX_6011", "ACC_410", "ACC_615", 30000.0, 1731582000, "04:00 PM", true});
         addTx({"TX_6019", "ACC_615", "ACC_822", 29400.0, 1731583200, "04:20 PM", true});
         addTx({"TX_6028", "ACC_822", "ACC_930", 28950.0, 1731584520, "04:42 PM", true});
 
-        // Normal High-Value Corporate Payroll / Vendor Transfers (False Positives for >$10k Rule Baseline)
-        for (int i = 1; i <= 15; ++i) {
+        for (int i = 1; i <= 35; ++i) {
             addTx({"TX_NORM_" + std::to_string(i), "CORP_" + std::to_string(i), "VENDOR_" + std::to_string(i),
                    14500.0 + (i * 200), 1731500000 + (i * 600), "09:00 AM", false});
         }
@@ -320,14 +345,18 @@ private:
 } // namespace aml
 
 int main(int argc, char* argv[]) {
-    std::string input_csv = (argc > 1) ? argv[1] : "../../data/transactions.csv";
-    std::string output_json = (argc > 2) ? argv[2] : "../../data/live_output.json";
+    auto t0 = std::chrono::high_resolution_clock::now();
+    std::string input_csv = (argc > 1) ? argv[1] : "../data/transactions.csv";
+    std::string output_json = (argc > 2) ? argv[2] : "../data/live_output.json";
 
     aml::FullTFCGEngine engine;
     engine.loadCSV(input_csv);
     engine.runDetectors();
-    engine.writeJSON(output_json);
 
-    std::cout << "[AML-Sentinel C++20] Detection & F1 Evaluation complete -> " << output_json << std::endl;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    engine.writeJSON(output_json, ms);
+
+    std::cout << "[AML-Sentinel C++20] Completed TFCG scan in " << ms << " ms -> " << output_json << std::endl;
     return 0;
 }
